@@ -2,10 +2,22 @@
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
 
+// Game constants
+const JUMP_POWER = 15;
+const GRAVITY = 0.6;
+const PLAYER_SPEED = 5;
+const BOUNCE_VELOCITY = 8;
+const INVINCIBILITY_TIME = 2000; // 2 seconds in milliseconds
+const ENEMY_DEFEAT_SCORE = 100;
+const COIN_COLLECT_SCORE = 50;
+
 // Game state
 let gameRunning = true;
 let score = 0;
 let lives = 3;
+let invincible = false;
+let invincibleTimer = 0;
+let animationFrameId = null;
 
 // Player object (Mario)
 const player = {
@@ -13,11 +25,11 @@ const player = {
     y: 400,
     width: 32,
     height: 32,
-    speed: 5,
+    speed: PLAYER_SPEED,
     velocityY: 0,
     jumping: false,
-    jumpPower: 15,
-    gravity: 0.6,
+    jumpPower: JUMP_POWER,
+    gravity: GRAVITY,
     color: '#ff0000'
 };
 
@@ -32,9 +44,9 @@ const platforms = [
 
 // Enemies (Goombas)
 let enemies = [
-    { x: 300, y: 518, width: 30, height: 30, speed: 2, direction: 1, color: '#8B4513' },
-    { x: 500, y: 518, width: 30, height: 30, speed: 1.5, direction: -1, color: '#8B4513' },
-    { x: 450, y: 318, width: 30, height: 30, speed: 2, direction: 1, color: '#8B4513' }
+    { x: 300, y: 518, width: 30, height: 30, speed: 2, direction: 1, color: '#8B4513', defeated: false },
+    { x: 500, y: 518, width: 30, height: 30, speed: 1.5, direction: -1, color: '#8B4513', defeated: false },
+    { x: 450, y: 318, width: 30, height: 30, speed: 2, direction: 1, color: '#8B4513', defeated: false }
 ];
 
 // Coins
@@ -49,8 +61,16 @@ let coins = [
 const keys = {};
 
 document.addEventListener('keydown', (e) => {
+    if (['Space', 'ArrowLeft', 'ArrowRight', 'KeyR'].includes(e.code)) {
+        e.preventDefault();
+    }
+    
+    if (!gameRunning && e.code !== 'KeyR') {
+        return;
+    }
+    
     keys[e.code] = true;
-    if (e.code === 'Space' && !player.jumping) {
+    if (e.code === 'Space' && !player.jumping && gameRunning) {
         player.velocityY = -player.jumpPower;
         player.jumping = true;
     }
@@ -65,6 +85,11 @@ document.addEventListener('keyup', (e) => {
 
 // Draw 8-bit style Mario
 function drawPlayer() {
+    // Apply flashing effect during invincibility
+    if (invincible && Math.floor(Date.now() / 100) % 2 === 0) {
+        return; // Skip drawing to create flashing effect
+    }
+    
     // Mario's body (red)
     ctx.fillStyle = '#ff0000';
     ctx.fillRect(player.x + 8, player.y + 8, 16, 8);
@@ -113,6 +138,8 @@ function drawPlatforms() {
 // Draw enemies (8-bit Goombas)
 function drawEnemies() {
     enemies.forEach(enemy => {
+        if (enemy.defeated) return;
+        
         // Body
         ctx.fillStyle = '#8B4513';
         ctx.fillRect(enemy.x, enemy.y, enemy.width, enemy.height);
@@ -212,20 +239,16 @@ function updatePlayer() {
     });
     
     // Check if fallen off screen
-    if (player.y > canvas.height) {
-        lives--;
-        updateLives();
-        if (lives <= 0) {
-            gameOver();
-        } else {
-            resetPlayerPosition();
-        }
+    if (player.y > canvas.height && !invincible) {
+        takeDamage();
     }
 }
 
 // Update enemies
 function updateEnemies() {
     enemies.forEach(enemy => {
+        if (enemy.defeated) return;
+        
         enemy.x += enemy.speed * enemy.direction;
         
         // Reverse direction at edges or platform edges
@@ -234,31 +257,23 @@ function updateEnemies() {
         }
         
         // Check collision with platforms
-        let onPlatform = false;
         platforms.forEach(platform => {
             if (checkCollision(enemy, platform)) {
                 enemy.y = platform.y - enemy.height;
-                onPlatform = true;
             }
         });
         
         // Check collision with player
-        if (checkCollision(player, enemy)) {
-            // If player is jumping on enemy
-            if (player.velocityY > 0 && player.y < enemy.y) {
-                enemy.x = -100; // Remove enemy
-                score += 100;
+        if (checkCollision(player, enemy) && !invincible) {
+            // If player is jumping on enemy from above
+            if (player.velocityY > 0 && player.y + player.height - 10 < enemy.y) {
+                enemy.defeated = true;
+                score += ENEMY_DEFEAT_SCORE;
                 updateScore();
-                player.velocityY = -8; // Bounce
+                player.velocityY = -BOUNCE_VELOCITY; // Bounce
             } else {
                 // Player hit by enemy
-                lives--;
-                updateLives();
-                if (lives <= 0) {
-                    gameOver();
-                } else {
-                    resetPlayerPosition();
-                }
+                takeDamage();
             }
         }
     });
@@ -269,10 +284,30 @@ function updateCoins() {
     coins.forEach(coin => {
         if (!coin.collected && checkCollision(player, coin)) {
             coin.collected = true;
-            score += 50;
+            score += COIN_COLLECT_SCORE;
             updateScore();
         }
     });
+}
+
+// Handle taking damage
+function takeDamage() {
+    lives--;
+    updateLives();
+    if (lives <= 0) {
+        gameOver();
+    } else {
+        resetPlayerPosition();
+        invincible = true;
+        invincibleTimer = Date.now();
+    }
+}
+
+// Update invincibility
+function updateInvincibility() {
+    if (invincible && Date.now() - invincibleTimer > INVINCIBILITY_TIME) {
+        invincible = false;
+    }
 }
 
 // Collision detection
@@ -310,18 +345,25 @@ function gameOver() {
 
 // Restart game
 function restartGame() {
+    // Cancel any existing animation frame
+    if (animationFrameId) {
+        cancelAnimationFrame(animationFrameId);
+    }
+    
     gameRunning = true;
     score = 0;
     lives = 3;
+    invincible = false;
+    invincibleTimer = 0;
     updateScore();
     updateLives();
     resetPlayerPosition();
     
     // Reset enemies
     enemies = [
-        { x: 300, y: 518, width: 30, height: 30, speed: 2, direction: 1, color: '#8B4513' },
-        { x: 500, y: 518, width: 30, height: 30, speed: 1.5, direction: -1, color: '#8B4513' },
-        { x: 450, y: 318, width: 30, height: 30, speed: 2, direction: 1, color: '#8B4513' }
+        { x: 300, y: 518, width: 30, height: 30, speed: 2, direction: 1, color: '#8B4513', defeated: false },
+        { x: 500, y: 518, width: 30, height: 30, speed: 1.5, direction: -1, color: '#8B4513', defeated: false },
+        { x: 450, y: 318, width: 30, height: 30, speed: 2, direction: 1, color: '#8B4513', defeated: false }
     ];
     
     // Reset coins
@@ -349,10 +391,12 @@ function gameLoop() {
     updatePlayer();
     updateEnemies();
     updateCoins();
+    updateInvincibility();
     
     // Loop
-    requestAnimationFrame(gameLoop);
+    animationFrameId = requestAnimationFrame(gameLoop);
 }
 
 // Start game
+document.getElementById('restartButton').addEventListener('click', restartGame);
 gameLoop();
